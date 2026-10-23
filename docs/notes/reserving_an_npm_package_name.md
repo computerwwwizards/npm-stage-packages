@@ -2,6 +2,22 @@
 
 As you may know, publishing a package version in the npm registry is moving toward requiring the configuration of OIDC trusted publishing. This can be configured for existing packages, but if you want to create a totally new package, npm does not offer the possibility to create one from its website. The only alternative left is to do it programmatically (mainly from the `npm` CLI), but to do so, you may want to have OIDC already configured. This creates a "chicken and egg" scenario.
 
+
+## Outline
+
+* [I did not want to use my own computer](#i-did-not-want-to-use-my-own-computer)
+* [NPM publishing needs 2FA](#npm-publishing-needs-2fa)
+* [NPM staged phase](#npm-staged-phase)
+* [Publishing catalog](#publishing-catalog)
+* [NPM registry metadata](#npm-registry-metadata)
+* [CI/CD automation](#cicd-automation)
+* [CI/CD trigger](#cicd-trigger)
+* [Configuring trusted publishers](#configuring-trusted-publishers)
+* [Implementation details](#implementation-details)
+  * [Using `curl` instead of the `npm` CLI](#using-curl-instead-of-the-npm-cli)
+  * [Combining `systemd-run`, the Node permission model, and `gh-aw-firewall`](#combining-systemd-run-the-node-permission-model-and-gh-aw-firewall)
+
+
 ## I did not want to use my own computer
 
 I do not use my own computer for this anymore, as I consider any third-party code untrusted—even the `npm` CLI code that would have to run on my machine. It is a personal security discipline I enforce.
