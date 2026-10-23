@@ -146,8 +146,9 @@ function main() {
 
   mkdirSync(OUTPUT_DIR, { recursive: true });
   writeFileSync(OUTPUT_FILE, serializedPayload, 'utf8');
-
+  
   if (process.env.GITHUB_OUTPUT) {
+    console.log("apending...")
     appendFileSync(
       process.env.GITHUB_OUTPUT,
       [
