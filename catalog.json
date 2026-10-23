@@ -1,1 +1,7 @@
-{}
+{
+  "@computerwwwizards/tinkuy-react": {
+     "repository": "https://github.com/computerwwwizards/tinkuy",
+     "license": "MIT",
+     "description": "Bridge between portable styles and react components"
+  }
+}
