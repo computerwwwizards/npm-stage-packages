@@ -1,4 +1,3 @@
-// scripts/stage-package.js
 import { readFileSync } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 
@@ -7,12 +6,6 @@ const EXPECTED_INTEGRITY = process.env.EXPECTED_INTEGRITY;
 const PACKAGE_NAME = process.env.PACKAGE_NAME;
 const NPM_STAGE_TOKEN = process.env.NPM_STAGE_TOKEN;
 
-/**
- * Constant-time comparison of two integrity strings.
- * @param {string} actual
- * @param {string} expected
- * @returns {boolean}
- */
 function verifyIntegrity(actual, expected) {
   const actualBuf = Buffer.from(actual, 'utf8');
   const expectedBuf = Buffer.from(expected, 'utf8');
@@ -30,7 +23,6 @@ async function main() {
     throw new Error('Missing EXPECTED_INTEGRITY or PACKAGE_NAME environment variable.');
   }
 
-  // 1. Read payload and verify SHA-512 integrity against Job 1 output
   const rawPayload = readFileSync(PAYLOAD_PATH, 'utf8');
   const actualIntegrity = `sha512-${createHash('sha512').update(rawPayload).digest('base64')}`;
 
@@ -48,10 +40,10 @@ async function main() {
   }
 
   const encodedPkgName = encodeURIComponent(PACKAGE_NAME);
-  const registryUrl = `https://registry.npmjs.org/${encodedPkgName}`;
+  const metadataUrl = `https://registry.npmjs.org/${encodedPkgName}`;
+  const stageUrl = `https://registry.npmjs.org/-/stage/package/${encodedPkgName}`;
 
-  // 2. Query registry first to skip if already published
-  const checkResponse = await fetch(registryUrl, {
+  const checkResponse = await fetch(metadataUrl, {
     method: 'GET',
     headers: {
       Accept: 'application/vnd.npm.install-v1+json',
@@ -69,13 +61,13 @@ async function main() {
     throw new Error(`Unexpected status checking registry (${checkResponse.status}): ${errBody}`);
   }
 
-  // 3. Stage the package via PUT (using x-npm-publish-phase: stage header / staging endpoint)
-  console.log(`Staging ${PACKAGE_NAME} to ${registryUrl}...`);
-  const stageResponse = await fetch(registryUrl, {
-    method: 'PUT',
+  console.log(`Staging ${PACKAGE_NAME} to ${stageUrl}...`);
+  const stageResponse = await fetch(stageUrl, {
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${NPM_STAGE_TOKEN}`,
       'Content-Type': 'application/json',
+      Accept: 'application/json',
       'npm-command': 'stage',
     },
     body: rawPayload,
@@ -83,10 +75,10 @@ async function main() {
 
   if (!stageResponse.ok) {
     const errorText = await stageResponse.text();
-    // Handle idempotency if the version was already staged in a prior run
     if (
       stageResponse.status === 409 ||
-      errorText.includes('cannot modify pre-existing version')
+      errorText.includes('cannot modify pre-existing version') ||
+      errorText.includes('already staged')
     ) {
       console.log(`Version for ${PACKAGE_NAME} is already staged. Treating as no-op.`);
       return;
@@ -94,8 +86,9 @@ async function main() {
     throw new Error(`Failed to stage ${PACKAGE_NAME} (HTTP ${stageResponse.status}): ${errorText}`);
   }
 
+  const result = await stageResponse.json().catch(() => ({}));
   console.log(
-    `Successfully staged ${PACKAGE_NAME}. Log in to npmjs.com to promote with 2FA and configure Trusted Publishing (OIDC).`,
+    `Successfully staged ${PACKAGE_NAME} (stageId: ${result.stageId ?? 'created'}). Log in to npmjs.com to approve with 2FA and configure Trusted Publishing (OIDC).`,
   );
 }
 
