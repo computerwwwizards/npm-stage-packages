@@ -12,19 +12,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Build payload without network access
+      - name: Build payload
         run: |
-          systemd-run --user --scope -p PrivateNetwork=yes node --permission --allow-fs-read="*" --allow-fs-write="*" scripts/build-payload.js
+          node --permission --allow-fs-read="*" --allow-fs-write="*" scripts/build-payload.js
 
       - name: Upload staging payload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: package-payloads
           path: payloads/
@@ -37,15 +37,15 @@ jobs:
     environment: npm-staging
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Download staging payload artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: package-payloads
           path: payloads/
@@ -55,4 +55,4 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          systemd-run --user --scope -p ProtectSystem=strict -p ProtectHome=yes node --permission --allow-fs-read="*" --allow-fs-write="*" --allow-net="registry.npmjs.org" scripts/stage-package.js
+          node --permission --allow-fs-read="*" --allow-fs-write="*" --allow-net="registry.npmjs.org" scripts/stage-package.js
