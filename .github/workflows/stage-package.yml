@@ -1,58 +1,109 @@
-name: Reserve NPM Package Name
+name: Stage NPM Packages
 
 on:
   push:
     branches:
       - main
+    paths:
+      - 'catalog.json'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-payload:
-    name: Build Package Staging Payload
+    name: Build Staging Payload
     runs-on: ubuntu-latest
+    outputs:
+      should_stage: ${{ steps.build.outputs.should_stage }}
+      integrity: ${{ steps.build.outputs.integrity }}
+      package_name: ${{ steps.build.outputs.package_name }}
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: 24
+          package-manager-cache: false
 
-      - name: Build payload without network access
+      - name: Setup AWF (GitHub Agentic Workflows Firewall)
+        uses: github/gh-aw-firewall@v1
+
+      - name: Check Registry Metadata & Build Payload in Isolated Namespace
+        id: build
         run: |
-          systemd-run --user --scope -p PrivateNetwork=yes node --permission --allow-fs-read="*" --allow-fs-write="*" scripts/build-payload.js
+          mkdir -p /tmp/npm-payload
 
-      - name: Upload staging payload artifact
+          # Step 1: If build-payload.js only needs local catalog.json -> payload.json generation,
+          # sever the network namespace completely with `unshare -n` while locking down FS access
+          # via the Node.js permission model.
+          sudo unshare -n -- \
+            sudo -u "$USER" \
+            Env="GITHUB_OUTPUT=$GITHUB_OUTPUT" \
+            "$(which node)" --permission \
+              --allow-fs-read="${GITHUB_WORKSPACE}/catalog.json" \
+              --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
+              --allow-fs-read="${GITHUB_WORKSPACE}/scripts/build-payload.js" \
+              --allow-fs-write="/tmp/npm-payload" \
+              --allow-fs-write="${GITHUB_OUTPUT}" \
+              ./scripts/build-payload.js
+
+      - name: Upload Payload Artifact
+        if: steps.build.outputs.should_stage == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: package-payloads
-          path: payloads/
-          if-no-files-found: ignore
+          name: staging-payload.json
+          path: /tmp/npm-payload/staging-payload.json
+          archive: false
+          retention-days: 1
 
   stage-package:
-    name: Stage Package in NPM Registry
+    name: Stage Package to NPM Registry
     needs: build-payload
+    if: needs.build-payload.outputs.should_stage == 'true'
     runs-on: ubuntu-latest
-    environment: npm-staging
+    environment: npm-staging-approval
     steps:
-      - name: Checkout repository
+      - name: Checkout Stage Script Only
         uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            package.json
+            scripts/stage-package.js
+          sparse-checkout-cone-mode: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: 24
+          package-manager-cache: false
 
-      - name: Download staging payload artifact
+      - name: Setup AWF (GitHub Agentic Workflows Firewall)
+        uses: github/gh-aw-firewall@v1
+
+      - name: Download Payload Artifact
         uses: actions/download-artifact@v8
         with:
-          name: package-payloads
-          path: payloads/
-          ignore-error-and-continue: true
+          name: staging-payload.json
+          path: /tmp/npm-payload
 
-      - name: Stage package to NPM
+      - name: Stage Package Behind AWF Egress Firewall
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_STAGE_TOKEN: ${{ secrets.NPM_STAGE_TOKEN }}
+          EXPECTED_INTEGRITY: ${{ needs.build-payload.outputs.integrity }}
+          PACKAGE_NAME: ${{ needs.build-payload.outputs.package_name }}
+          PAYLOAD_PATH: /tmp/npm-payload/staging-payload.json
         run: |
-          systemd-run --user --scope -p ProtectSystem=strict -p ProtectHome=yes node --permission --allow-fs-read="*" --allow-fs-write="*" --allow-net="registry.npmjs.org" scripts/stage-package.js
+          # Wrap execution in `awf` so outbound traffic is strictly limited to registry.npmjs.org
+          # and use Node's permission model so the process can only read the script and payload file,
+          # with zero write permissions and zero child-process spawning allowed.
+          sudo --preserve-env=NPM_STAGE_TOKEN,EXPECTED_INTEGRITY,PACKAGE_NAME,PAYLOAD_PATH \
+            awf --allow-domains registry.npmjs.org -- \
+            "$(which node)" --permission \
+              --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
+              --allow-fs-read="${GITHUB_WORKSPACE}/scripts/stage-package.js" \
+              --allow-fs-read="/tmp/npm-payload/staging-payload.json" \
+              ./scripts/stage-package.js
