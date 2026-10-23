@@ -29,8 +29,8 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Setup AWF (GitHub Agentic Workflows Firewall)
-        uses: github/gh-aw-firewall@v1
+      # - name: Setup AWF (GitHub Agentic Workflows Firewall)
+      #   uses: github/gh-aw-firewall@v1
 
       - name: Check Registry Metadata & Build Payload in Isolated Namespace
         id: build
@@ -81,8 +81,8 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Setup AWF (GitHub Agentic Workflows Firewall)
-        uses: github/gh-aw-firewall@v1
+      # - name: Setup AWF (GitHub Agentic Workflows Firewall)
+      #   uses: github/gh-aw-firewall@v1
 
       - name: Download Payload Artifact
         uses: actions/download-artifact@v8
