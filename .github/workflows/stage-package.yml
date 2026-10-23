@@ -26,26 +26,19 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
-      # - name: Setup AWF (GitHub Agentic Workflows Firewall)
-      #   uses: github/gh-aw-firewall@v1
-
-      - name: Check Registry Metadata & Build Payload in Isolated Namespace
+      - name: Build Payload
         id: build
         run: |
           mkdir -p /tmp/npm-payload
-
-          # Step 1: If build-payload.js only needs local catalog.json -> payload.json generation,
-          # sever the network namespace completely with `unshare -n` while locking down FS access
-          # via the Node.js permission model.
-          GITHUB_OUTPUT="$GITHUB_OUTPUT" "$(which node)" --permission \
-            --allow-fs-read="${GITHUB_WORKSPACE}/catalog.json" \
-            --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
-            --allow-fs-read="${GITHUB_WORKSPACE}/scripts/build-payload.js" \
-            --allow-fs-write="/tmp/npm-payload" \
-            --allow-fs-write="${GITHUB_OUTPUT}" \
+          node --permission \
+            --allow-fs-read="$(realpath "${GITHUB_WORKSPACE}/catalog.json")" \
+            --allow-fs-read="$(realpath "${GITHUB_WORKSPACE}/package.json")" \
+            --allow-fs-read="$(realpath "${GITHUB_WORKSPACE}/scripts/build-payload.js")" \
+            --allow-fs-write="$(realpath /tmp/npm-payload)" \
+            --allow-fs-write="$(realpath "${GITHUB_OUTPUT}")" \
             ./scripts/build-payload.js
 
       - name: Upload Payload Artifact
@@ -75,11 +68,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
-
-      # - name: Setup AWF (GitHub Agentic Workflows Firewall)
-      #   uses: github/gh-aw-firewall@v1
 
       - name: Download Payload Artifact
         uses: actions/download-artifact@v8
@@ -87,20 +77,16 @@ jobs:
           name: staging-payload.json
           path: /tmp/npm-payload
 
-      - name: Stage Package Behind AWF Egress Firewall
+      - name: Stage Package
         env:
           NPM_STAGE_TOKEN: ${{ secrets.NPM_STAGE_TOKEN }}
           EXPECTED_INTEGRITY: ${{ needs.build-payload.outputs.integrity }}
           PACKAGE_NAME: ${{ needs.build-payload.outputs.package_name }}
           PAYLOAD_PATH: /tmp/npm-payload/staging-payload.json
         run: |
-          # Wrap execution in `awf` so outbound traffic is strictly limited to registry.npmjs.org
-          # and use Node's permission model so the process can only read the script and payload file,
-          # with zero write permissions and zero child-process spawning allowed.
-          #  awf --allow-domains registry.npmjs.org --
-          sudo --preserve-env=NPM_STAGE_TOKEN,EXPECTED_INTEGRITY,PACKAGE_NAME,PAYLOAD_PATH \
-            "$(which node)" --permission --allow-net \
-              --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
-              --allow-fs-read="${GITHUB_WORKSPACE}/scripts/stage-package.js" \
-              --allow-fs-read="/tmp/npm-payload/staging-payload.json" \
-              ./scripts/stage-package.js
+          node --permission \
+            --allow-net \
+            --allow-fs-read="$(realpath "${GITHUB_WORKSPACE}/package.json")" \
+            --allow-fs-read="$(realpath "${GITHUB_WORKSPACE}/scripts/stage-package.js")" \
+            --allow-fs-read="$(realpath /tmp/npm-payload/staging-payload.json)" \
+            ./scripts/stage-package.js
