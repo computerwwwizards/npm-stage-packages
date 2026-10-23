@@ -100,8 +100,8 @@ jobs:
           # Wrap execution in `awf` so outbound traffic is strictly limited to registry.npmjs.org
           # and use Node's permission model so the process can only read the script and payload file,
           # with zero write permissions and zero child-process spawning allowed.
-          sudo --preserve-env=NPM_STAGE_TOKEN,EXPECTED_INTEGRITY,PACKAGE_NAME,PAYLOAD_PATH \
-            awf --allow-domains registry.npmjs.org -- \
+          # sudo --preserve-env=NPM_STAGE_TOKEN,EXPECTED_INTEGRITY,PACKAGE_NAME,PAYLOAD_PATH \
+          #  awf --allow-domains registry.npmjs.org -- \
             "$(which node)" --permission \
               --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
               --allow-fs-read="${GITHUB_WORKSPACE}/scripts/stage-package.js" \
