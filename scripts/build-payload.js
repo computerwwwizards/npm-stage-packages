@@ -1,153 +1,165 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import zlib from 'node:zlib';
+// scripts/build-payload.js
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
+import { join, resolve } from 'node:path';
 
-function createTarHeader(name, size, mode, uid, gid, mtime, typeflag) {
-  const buf = Buffer.alloc(512);
+const BOOTSTRAP_VERSION = '0.0.0-reserve.0';
+const CATALOG_PATH = resolve(process.cwd(), 'catalog.json');
+const OUTPUT_DIR = '/tmp/npm-payload';
+const OUTPUT_FILE = join(OUTPUT_DIR, 'staging-payload.json');
 
-  // name (100)
-  buf.write(name, 0, Math.min(name.length, 100), 'utf8');
-  // mode (8)
-  buf.write(mode.toString(8).padStart(7, '0') + '\0', 100, 8, 'utf8');
-  // uid (8)
-  buf.write(uid.toString(8).padStart(7, '0') + '\0', 108, 8, 'utf8');
-  // gid (8)
-  buf.write(gid.toString(8).padStart(7, '0') + '\0', 116, 8, 'utf8');
-  // size (12)
-  buf.write(size.toString(8).padStart(11, '0') + '\0', 124, 12, 'utf8');
-  // mtime (12)
-  buf.write(Math.floor(mtime / 1000).toString(8).padStart(11, '0') + '\0', 136, 12, 'utf8');
-  // chksum blank (8)
-  buf.write('        ', 148, 8, 'utf8');
-  // typeflag (1)
-  buf.write(typeflag, 156, 1, 'utf8');
-
-  // compute checksum
-  let checksum = 0;
-  for (let i = 0; i < 512; i++) {
-    checksum += buf[i];
-  }
-
-  buf.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'utf8');
-  return buf;
+/**
+ * Normalizes a repository URL into the format expected by npm OIDC provenance.
+ * @param {string} rawUrl
+ * @returns {string}
+ */
+function normalizeRepoUrl(rawUrl) {
+  const trimmed = rawUrl.trim().replace(/\/+$/, '');
+  const withPrefix = trimmed.startsWith('git+') ? trimmed : `git+${trimmed}`;
+  return withPrefix.endsWith('.git') ? withPrefix : `${withPrefix}.git`;
 }
 
-function createGzipTar(files) {
-  const chunks = [];
+/**
+ * Builds an in-memory POSIX USTAR tar archive for a single file and gzips it.
+ * Eliminates the need for `--allow-child-process` to call `tar` or `npm pack`.
+ * @param {string} filename - Path inside archive (e.g., "package/package.json")
+ * @param {Buffer} contentBuffer - File contents
+ * @returns {Buffer} Gzipped tarball (.tgz)
+ */
+function createInMemoryTgz(filename, contentBuffer) {
+  const header = Buffer.alloc(512, 0);
 
-  for (const file of files) {
-    const name = file.name;
-    const content = Buffer.isBuffer(file.content) ? file.content : Buffer.from(file.content, 'utf8');
-    const header = createTarHeader(name, content.length, 0o644, 0, 0, Date.now(), '0');
-    chunks.push(header);
-    chunks.push(content);
+  // File name (100 bytes)
+  header.write(filename, 0, 100, 'utf8');
+  // File mode (8 bytes, octal)
+  header.write('0000644\0', 100, 8, 'utf8');
+  // UID & GID (8 bytes each, octal)
+  header.write('0000000\0', 108, 8, 'utf8');
+  header.write('0000000\0', 116, 8, 'utf8');
+  // File size in bytes (11 octal digits + null terminator)
+  header.write(`${contentBuffer.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'utf8');
+  // Mtime (fixed epoch timestamp for deterministic builds)
+  header.write('00000000000\0', 136, 12, 'utf8');
+  // Fill checksum spaces (8 spaces) before calculating checksum
+  header.write('        ', 148, 8, 'utf8');
+  // Typeflag ('0' = regular file)
+  header.write('0', 156, 1, 'utf8');
+  // USTAR indicator & version
+  header.write('ustar\0', 257, 6, 'utf8');
+  header.write('00', 263, 2, 'utf8');
 
-    const remainder = content.length % 512;
-    if (remainder > 0) {
-      chunks.push(Buffer.alloc(512 - remainder));
-    }
+  // Compute header checksum
+  let chksum = 0;
+  for (let i = 0; i < 512; i += 1) {
+    chksum += header[i];
   }
+  header.write(`${chksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'utf8');
 
-  // 2 empty 512-byte blocks at end
-  chunks.push(Buffer.alloc(1024));
+  // Pad file data to a multiple of 512 bytes
+  const paddingLength = (512 - (contentBuffer.length % 512)) % 512;
+  const padding = Buffer.alloc(paddingLength, 0);
+  // End-of-archive marker (two 512-byte zero blocks)
+  const endOfArchive = Buffer.alloc(1024, 0);
 
-  const tarBuffer = Buffer.concat(chunks);
-  return zlib.gzipSync(tarBuffer);
-}
-
-export function buildNpmPackagePayload(packageName, catalogEntry, version = '0.0.0-staged') {
-  const pkgManifest = {
-    name: packageName,
-    version: version,
-    description: catalogEntry.description || '',
-    license: catalogEntry.license || 'MIT',
-    repository: catalogEntry.repository || '',
-    readme: catalogEntry.readme || '# ' + packageName + '\n\nReserved package name.'
-  };
-
-  const manifestStr = JSON.stringify(pkgManifest, null, 2);
-  const readmeStr = pkgManifest.readme;
-
-  const tarballGzip = createGzipTar([
-    { name: 'package/package.json', content: manifestStr },
-    { name: 'package/README.md', content: readmeStr }
-  ]);
-
-  const tarballBase64 = tarballGzip.toString('base64');
-  const shasum = crypto.createHash('sha1').update(tarballGzip).digest('hex');
-  const integrity = 'sha512-' + crypto.createHash('sha512').update(tarballGzip).digest('base64');
-
-  const filename = `${packageName.replace(/^@/, '').replace('/', '-')}-${version}.tgz`;
-
-  const payload = {
-    _id: packageName,
-    name: packageName,
-    'dist-tags': {
-      staged: version
-    },
-    versions: {
-      [version]: {
-        name: packageName,
-        version: version,
-        description: pkgManifest.description,
-        license: pkgManifest.license,
-        repository: pkgManifest.repository,
-        readme: pkgManifest.readme,
-        _id: `${packageName}@${version}`,
-        dist: {
-          shasum: shasum,
-          integrity: integrity,
-          tarball: `https://registry.npmjs.org/${packageName}/-/${filename}`
-        }
-      }
-    },
-    _attachments: {
-      [filename]: {
-        content_type: 'application/gzip',
-        data: tarballBase64,
-        length: tarballGzip.length
-      }
-    }
-  };
-
-  return payload;
+  const tarBuffer = Buffer.concat([header, contentBuffer, padding, endOfArchive]);
+  return gzipSync(tarBuffer, { level: 9 });
 }
 
 function main() {
-  const catalogPath = path.resolve(process.cwd(), 'catalog.json');
-  const outputDir = path.resolve(process.cwd(), 'payloads');
+  const rawCatalog = readFileSync(CATALOG_PATH, 'utf8');
+  const catalog = JSON.parse(rawCatalog);
 
-  if (!fs.existsSync(catalogPath)) {
-    console.error(`catalog.json not found at ${catalogPath}`);
-    process.exit(1);
-  }
+  // Target package can be passed via env TARGET_PACKAGE, or default to the first entry
+  const targetPkgName = process.env.TARGET_PACKAGE || Object.keys(catalog)[0];
 
-  const catalogContent = fs.readFileSync(catalogPath, 'utf8');
-  const catalog = JSON.parse(catalogContent || '{}');
-
-  const packageNames = Object.keys(catalog);
-  if (packageNames.length === 0) {
-    console.log('No packages found in catalog.json. Nothing to build.');
+  if (!targetPkgName || !catalog[targetPkgName]) {
+    if (process.env.GITHUB_OUTPUT) {
+      appendFileSync(process.env.GITHUB_OUTPUT, 'should_stage=false\n');
+    }
+    console.log('No valid target package found in catalog.json.');
     return;
   }
 
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+  const meta = catalog[targetPkgName];
+  const unscopedName = targetPkgName.split('/').pop();
+  const tarballFilename = `${unscopedName}-${BOOTSTRAP_VERSION}.tgz`;
+  const encodedPkgName = targetPkgName.replace('/', '%2f');
+  const registryUrl = `https://registry.npmjs.org/${encodedPkgName}`;
+
+  // 1. Create minimal package.json
+  const pkgJson = {
+    name: targetPkgName,
+    version: BOOTSTRAP_VERSION,
+    description: meta.description ?? '',
+    license: meta.license ?? 'MIT',
+    repository: {
+      type: 'git',
+      url: normalizeRepoUrl(meta.repository),
+    },
+  };
+
+  const pkgJsonBuffer = Buffer.from(`${JSON.stringify(pkgJson, null, 2)}\n`, 'utf8');
+
+  // 2. Build deterministic .tgz in memory
+  const tgzBuffer = createInMemoryTgz('package/package.json', pkgJsonBuffer);
+
+  // 3. Compute hashes required by the npm registry CouchDB packument
+  const shasum = createHash('sha1').update(tgzBuffer).digest('hex');
+  const sha512Base64 = createHash('sha512').update(tgzBuffer).digest('base64');
+  const integrity = `sha512-${sha512Base64}`;
+
+  // 4. Construct full npm PUT packument payload
+  const packumentPayload = {
+    _id: targetPkgName,
+    name: targetPkgName,
+    description: pkgJson.description,
+    'dist-tags': {
+      latest: BOOTSTRAP_VERSION,
+    },
+    versions: {
+      [BOOTSTRAP_VERSION]: {
+        name: targetPkgName,
+        version: BOOTSTRAP_VERSION,
+        description: pkgJson.description,
+        license: pkgJson.license,
+        repository: pkgJson.repository,
+        _id: `${targetPkgName}@${BOOTSTRAP_VERSION}`,
+        dist: {
+          shasum,
+          integrity,
+          tarball: `${registryUrl}/-/${tarballFilename}`,
+        },
+      },
+    },
+    _attachments: {
+      [tarballFilename]: {
+        content_type: 'application/octet-stream',
+        data: tgzBuffer.toString('base64'),
+        length: tgzBuffer.length,
+      },
+    },
+  };
+
+  const serializedPayload = JSON.stringify(packumentPayload);
+  const payloadIntegrity = `sha512-${createHash('sha512').update(serializedPayload).digest('base64')}`;
+
+  mkdirSync(OUTPUT_DIR, { recursive: true });
+  writeFileSync(OUTPUT_FILE, serializedPayload, 'utf8');
+
+  if (process.env.GITHUB_OUTPUT) {
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      [
+        'should_stage=true',
+        `package_name=${targetPkgName}`,
+        `integrity=${payloadIntegrity}`,
+        '',
+      ].join('\n'),
+    );
   }
 
-  for (const pkgName of packageNames) {
-    const entry = catalog[pkgName];
-    const payload = buildNpmPackagePayload(pkgName, entry);
-
-    const safeFilename = pkgName.replace(/^@/, '').replace(/[/]/g, '__') + '.json';
-    const outputPath = path.join(outputDir, safeFilename);
-
-    fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2), 'utf8');
-    console.log(`Generated staging payload for ${pkgName} -> ${outputPath}`);
-  }
+  console.log(`Built staging payload for ${targetPkgName} (${payloadIntegrity})`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) {
-  main();
-}
+main();
