@@ -40,16 +40,13 @@ jobs:
           # Step 1: If build-payload.js only needs local catalog.json -> payload.json generation,
           # sever the network namespace completely with `unshare -n` while locking down FS access
           # via the Node.js permission model.
-          sudo unshare -n -- \
-            sudo -u "$USER" \
-            Env="GITHUB_OUTPUT=$GITHUB_OUTPUT" \
-            "$(which node)" --permission \
-              --allow-fs-read="${GITHUB_WORKSPACE}/catalog.json" \
-              --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
-              --allow-fs-read="${GITHUB_WORKSPACE}/scripts/build-payload.js" \
-              --allow-fs-write="/tmp/npm-payload" \
-              --allow-fs-write="${GITHUB_OUTPUT}" \
-              ./scripts/build-payload.js
+          GITHUB_OUTPUT="$GITHUB_OUTPUT" "$(which node)" --permission \
+            --allow-fs-read="${GITHUB_WORKSPACE}/catalog.json" \
+            --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
+            --allow-fs-read="${GITHUB_WORKSPACE}/scripts/build-payload.js" \
+            --allow-fs-write="/tmp/npm-payload" \
+            --allow-fs-write="${GITHUB_OUTPUT}" \
+            ./scripts/build-payload.js
 
       - name: Upload Payload Artifact
         if: steps.build.outputs.should_stage == 'true'
@@ -100,9 +97,9 @@ jobs:
           # Wrap execution in `awf` so outbound traffic is strictly limited to registry.npmjs.org
           # and use Node's permission model so the process can only read the script and payload file,
           # with zero write permissions and zero child-process spawning allowed.
-          # sudo --preserve-env=NPM_STAGE_TOKEN,EXPECTED_INTEGRITY,PACKAGE_NAME,PAYLOAD_PATH \
-          #  awf --allow-domains registry.npmjs.org -- \
-            "$(which node)" --permission \
+          #  awf --allow-domains registry.npmjs.org --
+          sudo --preserve-env=NPM_STAGE_TOKEN,EXPECTED_INTEGRITY,PACKAGE_NAME,PAYLOAD_PATH \
+            "$(which node)" --permission --allow-net \
               --allow-fs-read="${GITHUB_WORKSPACE}/package.json" \
               --allow-fs-read="${GITHUB_WORKSPACE}/scripts/stage-package.js" \
               --allow-fs-read="/tmp/npm-payload/staging-payload.json" \
